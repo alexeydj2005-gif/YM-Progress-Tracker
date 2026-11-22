@@ -1,14 +1,7 @@
 node_modules/
 .wrangler/
-backups/
-frontend-original/
-*.backup
-*.backup-*
-*.auth-backup
-*.pre-api.backup
+.dev.vars
 .env
 .env.*
-.dev.vars
-.dev.vars.*
-*.pem
-*.key
+*.log
+.DS_Store

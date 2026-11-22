@@ -1,0 +1,186 @@
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "application/json",
+    },
+  });
+}
+
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    const path = url.pathname;
+
+    if (request.method === "OPTIONS") {
+      return new Response(null, { headers: corsHeaders });
+    }
+
+    // Comprobar que la API funciona
+    if (path === "/" && request.method === "GET") {
+      return json({
+        message: "Gym Progress Tracker API funcionando",
+      });
+    }
+
+    // Listar todos los ejercicios
+    if (path === "/api/exercises" && request.method === "GET") {
+      const { results } = await env.DB.prepare(
+        `SELECT * FROM exercise ORDER BY exercise_id DESC`
+      ).all();
+
+      return json(results);
+    }
+
+    // Registrar un ejercicio
+    if (path === "/api/exercises" && request.method === "POST") {
+      try {
+        const body = await request.json();
+
+        const {
+          exercise_name,
+          description = null,
+          muscle_group,
+          equipment = null,
+        } = body;
+
+        if (
+          typeof exercise_name !== "string" ||
+          !exercise_name.trim() ||
+          typeof muscle_group !== "string" ||
+          !muscle_group.trim()
+        ) {
+          return json({
+            error: "exercise_name y muscle_group son obligatorios",
+          }, 400);
+        }
+
+        const result = await env.DB.prepare(`
+          INSERT INTO exercise (
+            exercise_name,
+            description,
+            muscle_group,
+            equipment
+          )
+          VALUES (?, ?, ?, ?)
+        `).bind(
+          exercise_name.trim(),
+          description,
+          muscle_group.trim(),
+          equipment
+        ).run();
+
+        return json({
+          message: "Ejercicio registrado correctamente",
+          exercise_id: result.meta.last_row_id,
+        }, 201);
+
+      } catch (error) {
+        return json({ error: "No se pudo registrar el ejercicio" }, 400);
+      }
+    }
+
+    // Consultar un ejercicio por ID
+    const match = path.match(/^\/api\/exercises\/(\d+)$/);
+
+    if (match) {
+      const id = Number(match[1]);
+
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        return json({ error: "ID inválido" }, 400);
+      }
+
+      if (request.method === "GET") {
+        const exercise = await env.DB.prepare(
+          "SELECT * FROM exercise WHERE exercise_id = ?"
+        ).bind(id).first();
+
+        if (!exercise) {
+          return json({ error: "Ejercicio no encontrado" }, 404);
+        }
+
+        return json(exercise);
+      }
+
+      // Actualizar un ejercicio
+      if (request.method === "PUT") {
+        try {
+          const body = await request.json();
+
+          const {
+            exercise_name,
+            description = null,
+            muscle_group,
+            equipment = null,
+          } = body;
+
+          if (
+            typeof exercise_name !== "string" ||
+            !exercise_name.trim() ||
+            typeof muscle_group !== "string" ||
+            !muscle_group.trim()
+          ) {
+            return json({
+              error: "exercise_name y muscle_group son obligatorios",
+            }, 400);
+          }
+
+          const result = await env.DB.prepare(`
+            UPDATE exercise
+            SET exercise_name = ?,
+                description = ?,
+                muscle_group = ?,
+                equipment = ?
+            WHERE exercise_id = ?
+          `).bind(
+            exercise_name.trim(),
+            description,
+            muscle_group.trim(),
+            equipment,
+            id
+          ).run();
+
+          if (result.meta.changes === 0) {
+            return json({ error: "Ejercicio no encontrado" }, 404);
+          }
+
+          return json({ message: "Ejercicio actualizado correctamente" });
+
+        } catch (error) {
+          return json({ error: "No se pudo actualizar el ejercicio" }, 400);
+        }
+      }
+
+      // Eliminar un ejercicio
+      if (request.method === "DELETE") {
+        try {
+          const result = await env.DB.prepare(
+            "DELETE FROM exercise WHERE exercise_id = ?"
+          ).bind(id).run();
+
+          if (result.meta.changes === 0) {
+            return json({ error: "Ejercicio no encontrado" }, 404);
+          }
+
+          return json({ message: "Ejercicio eliminado correctamente" });
+
+        } catch (error) {
+          return json({
+            error: "No se pudo eliminar. Comprueba si el ejercicio está asociado a rutinas o sesiones.",
+          }, 409);
+        }
+      }
+    }
+
+    return json({ error: "Ruta no encontrada" }, 404);
+  },
+};
+
