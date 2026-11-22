@@ -1,0 +1,14 @@
+
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "gym-progress-tracker-api",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-20",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "gym-progress-tracker-db",
+      "database_id": "143195f2-39d2-49da-b83c-ecf01f0706ae"
+    }
+  ]
+}

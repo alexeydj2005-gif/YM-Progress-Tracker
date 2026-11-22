@@ -1,0 +1,14 @@
+node_modules/
+.wrangler/
+backups/
+frontend-original/
+*.backup
+*.backup-*
+*.auth-backup
+*.pre-api.backup
+.env
+.env.*
+.dev.vars
+.dev.vars.*
+*.pem
+*.key
