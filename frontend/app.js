@@ -1293,6 +1293,7 @@ function openModal(type, id) {
 
                 const object = {
                     id: exerciseId,
+                    dbId: Math.abs(exerciseId),
                     name: payload.exercise_name,
                     muscle: payload.muscle_group,
                     secondaryMuscles: secondaryMusclesFor({

@@ -6,6 +6,15 @@ const corsHeaders = {
 };
 
 
+// Use strict ISO date parsing, including leap years; Date.parse normalizes some bad dates.
+function validIsoDate(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  if (year < 1 || month < 1 || month > 12 || day < 1) return false;
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return day <= daysInMonth;
+}
+
 const enc = new TextEncoder();
 const b64 = bytes => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
 const unb64 = value => Uint8Array.from(atob(value.replace(/-/g,"+").replace(/_/g,"/")), c => c.charCodeAt(0));
@@ -581,8 +590,7 @@ export default {
           return json({ error: "Selecciona una rutina válida." }, 400);
         }
 
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(date) ||
-            !Number.isFinite(Date.parse(date + "T00:00:00Z"))) {
+        if (!validIsoDate(date)) {
           return json({ error: "La fecha de la sesión no es válida." }, 400);
         }
 
@@ -670,8 +678,15 @@ export default {
 
         const grouped = new Map();
 
+        // Results are ordered by progress_id DESC within each date.
+        // Preserve the latest value for each metric instead of overwriting it
+        // with older duplicate records.
+        const seenMetrics = new Set();
         for (const item of results) {
           const date = String(item.record_date).slice(0, 10);
+          const metricKey = `${date}:${item.metric_name}`;
+          if (seenMetrics.has(metricKey)) continue;
+          seenMetrics.add(metricKey);
 
           if (!grouped.has(date)) {
             grouped.set(date, {
@@ -714,8 +729,7 @@ export default {
         const waist = body.waist == null || body.waist === "" ? null : Number(body.waist);
         const chest = body.chest == null || body.chest === "" ? null : Number(body.chest);
 
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(date) ||
-            !Number.isFinite(Date.parse(date + "T00:00:00Z"))) {
+        if (!validIsoDate(date)) {
           return json({ error: "La fecha de la medición no es válida." }, 400);
         }
 
@@ -737,15 +751,19 @@ export default {
           ...(chest === null ? [] : [{ name: "chest", value: chest, unit: "cm" }])
         ];
 
-        const statements = measurements.map(item =>
-          env.DB.prepare(`
+        // Replace only the submitted metrics on this date; keep other metrics.
+        // D1 batch executes these statements transactionally and in order.
+        const statements = [
+          ...measurements.map(item => env.DB.prepare(`
+            DELETE FROM progress_record
+            WHERE user_id = ? AND record_date = ? AND metric_name = ?
+          `).bind(user.user_id, date, item.name)),
+          ...measurements.map(item => env.DB.prepare(`
             INSERT INTO progress_record (
               user_id, record_date, metric_name, metric_value, unit, notes
             ) VALUES (?, ?, ?, ?, ?, ?)
-          `).bind(
-            user.user_id, date, item.name, item.value, item.unit, note
-          )
-        );
+          `).bind(user.user_id, date, item.name, item.value, item.unit, note))
+        ];
 
         await env.DB.batch(statements);
 

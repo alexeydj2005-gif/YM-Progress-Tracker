@@ -55,7 +55,7 @@ una sola vez después de revisar el SQL.
 
 ## Autenticación de usuarios (Cloudflare D1)
 
-Se añadió registro, inicio/cierre de sesión y validación de sesión mediante tokens aleatorios. Las contraseñas se almacenan con PBKDF2-SHA-256 (210 000 iteraciones); D1 almacena únicamente el hash del token de sesión. Las sesiones caducan a los 7 días.
+Se añadió registro, inicio/cierre de sesión y validación de sesión mediante tokens aleatorios. Las contraseñas se almacenan con PBKDF2-SHA-256 (100 000 iteraciones en la implementación actual; pendiente fortalecer con migración compatible); D1 almacena únicamente el hash del token de sesión. Las sesiones caducan a los 7 días.
 
 ### Despliegue (desde la raíz del proyecto)
 
@@ -82,7 +82,8 @@ npx wrangler pages deploy frontend --project-name gym-progress-tracker
 ### Alcance actual y notas
 
 - El perfil y los datos de entrenamiento locales se guardan bajo una clave de `localStorage` distinta por usuario en ese navegador.
-- La biblioteca de ejercicios continúa usando las rutas CRUD existentes; estas rutas todavía no exigen sesión y la tabla `exercise` no está asociada a `user_id`. Por tanto, el catálogo personalizado sigue siendo compartido entre quienes accedan a la API.
-- Rutinas, sesiones y mediciones continúan siendo datos locales del navegador en esta versión; todavía no hay sincronización multi-dispositivo de esos registros.
+- La API de ejercicios exige sesión, permite un catálogo global (`user_id IS NULL`) y ejercicios propios por usuario.
+- Rutinas, sesiones y mediciones se consultan y guardan en Cloudflare D1 mediante endpoints autenticados; `localStorage` mantiene una copia local para la interfaz.
+- El registro de series individuales en `workout_set` aún no está implementado en la interfaz/API actual.
 - La clave antigua `gpt-demo` no se migra automáticamente a ninguna cuenta para evitar mezclar datos entre usuarios.
 - El formulario antiguo de AWS no se usa. La aplicación debe abrirse desde el dominio Pages de Cloudflare listado arriba.
