@@ -18,7 +18,10 @@ CREATE TABLE IF NOT EXISTS exercise (
     exercise_name VARCHAR(100) NOT NULL,
     description   TEXT,
     muscle_group  VARCHAR(100) NOT NULL,
-    equipment     VARCHAR(100)
+    exercise_type VARCHAR(50) NOT NULL DEFAULT 'Compuesto',
+    equipment     VARCHAR(100),
+    user_id       INTEGER,
+    FOREIGN KEY (user_id) REFERENCES app_user(user_id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS workout_routine (
@@ -47,6 +50,7 @@ CREATE TABLE IF NOT EXISTS workout_session (
     routine_id   INTEGER,
     session_date DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     notes        TEXT,
+    volume_kg    REAL NOT NULL DEFAULT 0,
     FOREIGN KEY (user_id) REFERENCES app_user(user_id),
     FOREIGN KEY (routine_id) REFERENCES workout_routine(routine_id)
 );
@@ -74,6 +78,12 @@ CREATE TABLE IF NOT EXISTS progress_record (
 );
 
 -- Indexes following the naming convention in the specification.
+CREATE INDEX IF NOT EXISTS idx_exercise_user_id
+    ON exercise(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_workout_session_user_id
+    ON workout_session(user_id);
+
 CREATE INDEX IF NOT EXISTS idx_workout_session_session_date
     ON workout_session(session_date);
 

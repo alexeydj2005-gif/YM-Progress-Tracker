@@ -439,10 +439,13 @@ const save = () => {
 // ============================================
 
 async function apiRequest(path, options = {}) {
+    const token = localStorage.getItem(TOKEN_KEY);
+
     const response = await fetch(`${API_BASE_URL}${path}`, {
         ...options,
         headers: {
             "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
             ...(options.headers || {})
         }
     });
@@ -457,68 +460,78 @@ async function apiRequest(path, options = {}) {
 }
 
 async function loadExercisesFromAPI() {
+    // Obtener únicamente los ejercicios globales y los del usuario autenticado.
     let remoteExercises = await apiRequest("/api/exercises");
 
-    // Migrar ejercicios personalizados que existían en localStorage.
+    // Recuperar ejercicios personalizados que aún existen en el almacenamiento local.
     const localCustom = d.exercises.filter(exercise => !exercise.builtin);
+
     const remoteNames = new Set(
-        remoteExercises.map(item => item.exercise_name.toLowerCase())
+        remoteExercises.map(item => item.exercise_name.trim().toLowerCase())
     );
 
+    // Sincronizar únicamente ejercicios personalizados.
     for (const exercise of localCustom) {
         const name = exercise.name.trim().toLowerCase();
 
-        if (!remoteNames.has(name)) {
-            await apiRequest("/api/exercises", {
-                method: "POST",
-                body: JSON.stringify({
-                    exercise_name: exercise.name,
-                    description: exercise.description,
-                    muscle_group: exercise.muscle,
-                    equipment: exercise.equipment
-                })
-            });
+        if (remoteNames.has(name)) continue;
 
-            remoteNames.add(name);
-        }
+        await apiRequest("/api/exercises", {
+            method: "POST",
+            body: JSON.stringify({
+                exercise_name: exercise.name,
+                description: exercise.description || "",
+                muscle_group: exercise.muscle,
+                exercise_type: exercise.type || "Compuesto",
+                equipment: exercise.equipment || "Otro"
+            })
+        });
+
+        remoteNames.add(name);
     }
 
-    // Obtener los registros, incluidos los recién migrados.
+    // Recuperar los ejercicios actualizados desde D1.
     remoteExercises = await apiRequest("/api/exercises");
 
-    const customExercises = remoteExercises.map(item => {
+    d.exercises = remoteExercises.map(item => {
+        const name = item.exercise_name.trim().toLowerCase();
+
         const preset = catalog.find(
-            exercise =>
-                exercise.name.toLowerCase() ===
-                item.exercise_name.toLowerCase()
+            exercise => exercise.name.trim().toLowerCase() === name
         );
 
+        const local = localCustom.find(
+            exercise => exercise.name.trim().toLowerCase() === name
+        );
+
+        const base = preset || local || {};
+        const isGlobal = item.user_id == null;
+
         return {
-            ...(preset || {}),
+            ...base,
             id: -Number(item.exercise_id),
+            dbId: Number(item.exercise_id),
             name: item.exercise_name,
             muscle: item.muscle_group,
-            type: preset?.type || "Compuesto",
-            equipment: item.equipment || preset?.equipment || "Otro",
-            description: item.description ||
-                preset?.description ||
-                "Ejercicio registrado en tu biblioteca.",
-            instructions: preset?.instructions || [
+            type: item.exercise_type || preset?.type || local?.type || "Compuesto",
+            equipment: item.equipment || preset?.equipment || local?.equipment || "Otro",
+            description: item.description || preset?.description ||
+                local?.description || "Ejercicio registrado en tu biblioteca.",
+            instructions: base.instructions || [
                 "Adopta una posición estable.",
                 "Realiza el movimiento de forma controlada.",
                 "Mantén una técnica adecuada."
             ],
-            icon: preset?.icon || "🏋️",
-            level: preset?.level || "Personalizado",
-            builtin: false
+            icon: base.icon || "🏋️",
+            level: base.level || (preset ? "Intermedio" : "Personalizado"),
+            secondaryMuscles: base.secondaryMuscles ||
+                secondaryMusclesFor({
+                    name: item.exercise_name,
+                    muscle: item.muscle_group
+                }),
+            builtin: isGlobal && Boolean(preset)
         };
     });
-
-    // El catálogo permanece local; los personalizados vienen de D1.
-    d.exercises = [
-        ...d.exercises.filter(exercise => exercise.builtin),
-        ...customExercises
-    ];
 
     save();
 }
@@ -1252,6 +1265,7 @@ function openModal(type, id) {
                 exercise_name: values.name.trim(),
                 description: values.description.trim(),
                 muscle_group: values.muscle,
+                exercise_type: values.type,
                 equipment: values.equipment
             };
 
@@ -1316,23 +1330,53 @@ function openModal(type, id) {
         // RUTINA
 
         if (type === "routine") {
+            const selectedIds = formData.getAll("routineExercises").map(Number);
 
-            d.routines.unshift({
-                id: makeId(),
+            if (!selectedIds.length) {
+                toast("Selecciona al menos un ejercicio para la rutina.");
+                return;
+            }
+
+            const selectedExercises = selectedIds
+                .map(id => d.exercises.find(exercise => exercise.id === id))
+                .filter(Boolean);
+
+            if (selectedExercises.length !== selectedIds.length ||
+                selectedExercises.some(exercise => !exercise.dbId)) {
+                toast("No se pudieron identificar todos los ejercicios seleccionados.");
+                return;
+            }
+
+            const payload = {
                 name: values.name.trim(),
                 focus: values.focus.trim(),
                 days: values.days.trim(),
                 minutes: Number(values.minutes),
-                exerciseIds: formData.getAll("routineExercises").map(Number),
-                items: formData.getAll("routineExercises")
-                    .map(Number)
-                    .map(id => d.exercises.find(exercise => exercise.id === id)?.name)
-                    .filter(Boolean)
-            });
+                exercises: selectedExercises.map(exercise => ({
+                    exercise_id: Number(exercise.dbId),
+                    sets_planned: 3,
+                    reps_planned: 10
+                }))
+            };
 
-            if (!d.routines[0].exerciseIds.length) {
-                d.routines.shift();
-                toast("Selecciona al menos un ejercicio para la rutina.");
+            try {
+                const result = await apiRequest("/api/routines", {
+                    method: "POST",
+                    body: JSON.stringify(payload)
+                });
+
+                d.routines.unshift({
+                    id: Number(result.routine_id),
+                    name: payload.name,
+                    focus: payload.focus,
+                    days: payload.days,
+                    minutes: payload.minutes,
+                    exerciseIds: selectedIds,
+                    items: selectedExercises.map(exercise => exercise.name)
+                });
+            } catch (error) {
+                console.error("Error guardando rutina:", error);
+                toast(`No se pudo guardar la rutina: ${error.message}`);
                 return;
             }
         }
@@ -1340,7 +1384,6 @@ function openModal(type, id) {
         // SESIÓN
 
         if (type === "session") {
-
             const selectedRoutine = d.routines.find(
                 routine => String(routine.id) === String(values.routineId)
             );
@@ -1350,17 +1393,11 @@ function openModal(type, id) {
                 return;
             }
 
-            // Compatibilidad con rutinas antiguas que solo guardaban nombres.
-            const routineExerciseIds = selectedRoutine.exerciseIds?.length
-                ? selectedRoutine.exerciseIds.map(Number)
-                : (selectedRoutine.items || [])
-                    .map(name => d.exercises.find(
-                        exercise => exercise.name === name
-                    )?.id)
-                    .filter(id => id != null);
+            const routineExerciseIds = (selectedRoutine.exerciseIds || [])
+                .map(Number);
 
             if (!routineExerciseIds.length) {
-                toast("Esta rutina no tiene ejercicios del catálogo. Edita la rutina y añade ejercicios.");
+                toast("Esta rutina no tiene ejercicios. Edita la rutina y añade ejercicios.");
                 return;
             }
 
@@ -1368,34 +1405,67 @@ function openModal(type, id) {
                 .map(id => d.exercises.find(exercise => exercise.id === id)?.name)
                 .filter(Boolean);
 
-            d.sessions.unshift({
-                id: makeId(),
-                name: selectedRoutine.name,
-                routineId: selectedRoutine.id,
-                routineName: selectedRoutine.name,
-                date: values.date,
-                exerciseIds: routineExerciseIds,
-                exerciseNames: routineExerciseNames,
-                exercises: routineExerciseNames.length,
-                volume: Number(values.volume)
-            });
+            try {
+                const result = await apiRequest("/api/sessions", {
+                    method: "POST",
+                    body: JSON.stringify({
+                        routine_id: Number(selectedRoutine.id),
+                        date: values.date,
+                        volume: Number(values.volume)
+                    })
+                });
+
+                d.sessions.unshift({
+                    id: Number(result.session_id),
+                    name: selectedRoutine.name,
+                    routineId: Number(selectedRoutine.id),
+                    routineName: selectedRoutine.name,
+                    date: values.date,
+                    exerciseIds: routineExerciseIds,
+                    exerciseNames: routineExerciseNames,
+                    exercises: routineExerciseNames.length,
+                    volume: Number(values.volume)
+                });
+            } catch (error) {
+                console.error("Error guardando sesión:", error);
+                toast(`No se pudo guardar la sesión: ${error.message}`);
+                return;
+            }
         }
 
         // PROGRESO
 
         if (type === "progress") {
-
             const measurement = {
                 date: values.date,
                 weight: Number(values.weight),
-                waist: Number(values.waist) || null,
-                chest: Number(values.chest) || null,
+                waist: values.waist === "" ? null : Number(values.waist),
+                chest: values.chest === "" ? null : Number(values.chest),
                 note: values.note.trim()
             };
 
-            d.progress.push(measurement);
+            try {
+                await apiRequest("/api/progress", {
+                    method: "POST",
+                    body: JSON.stringify(measurement)
+                });
 
-            d.profile.weight = measurement.weight;
+                const remoteProgress = await apiRequest("/api/progress");
+
+                d.progress = remoteProgress.map(item => ({
+                    ...item,
+                    id: Number(item.id),
+                    weight: item.weight == null ? null : Number(item.weight),
+                    waist: item.waist == null ? null : Number(item.waist),
+                    chest: item.chest == null ? null : Number(item.chest)
+                }));
+
+                d.profile.weight = measurement.weight;
+            } catch (error) {
+                console.error("Error guardando progreso:", error);
+                toast(`No se pudo guardar el progreso: ${error.message}`);
+                return;
+            }
         }
 
         save();
@@ -1468,6 +1538,20 @@ document.addEventListener("click", async event => {
             if (collection === "exercises") {
                 await apiRequest(
                     `/api/exercises/${Math.abs(id)}`,
+                    { method: "DELETE" }
+                );
+            }
+
+            if (collection === "routines") {
+                await apiRequest(
+                    `/api/routines/${id}`,
+                    { method: "DELETE" }
+                );
+            }
+
+            if (collection === "sessions") {
+                await apiRequest(
+                    `/api/sessions/${id}`,
                     { method: "DELETE" }
                 );
             }
@@ -1892,10 +1976,62 @@ $("#logoutButton").addEventListener("click", async () => {
 async function initializeApp() {
     try {
         await loadExercisesFromAPI();
+
+        const [remoteRoutines, remoteSessions, remoteProgress] =
+            await Promise.all([
+                apiRequest("/api/routines"),
+                apiRequest("/api/sessions"),
+                apiRequest("/api/progress")
+            ]);
+
+        d.routines = remoteRoutines.map(routine => ({
+            ...routine,
+            id: Number(routine.id),
+            exerciseIds: (routine.exerciseIds || []).map(id => -Number(id)),
+            items: routine.items || []
+        }));
+
+        d.sessions = remoteSessions.map(session => {
+            const routine = d.routines.find(
+                item => item.id === Number(session.routineId)
+            );
+
+            const exerciseIds = (session.exerciseIds || [])
+                .map(id => -Number(id));
+
+            return {
+                ...session,
+                id: Number(session.id),
+                routineId: Number(session.routineId),
+                exerciseIds,
+                exerciseNames: exerciseIds
+                    .map(id => d.exercises.find(exercise => exercise.id === id)?.name)
+                    .filter(Boolean),
+                exercises: Number(session.exercises || exerciseIds.length)
+            };
+        });
+
+        d.progress = remoteProgress.map(item => ({
+            ...item,
+            id: Number(item.id),
+            weight: item.weight == null ? null : Number(item.weight),
+            waist: item.waist == null ? null : Number(item.waist),
+            chest: item.chest == null ? null : Number(item.chest)
+        }));
+
+        const latestMeasurement = [...d.progress]
+            .sort((a, b) => b.date.localeCompare(a.date))[0];
+
+        if (latestMeasurement?.weight != null) {
+            d.profile.weight = latestMeasurement.weight;
+        }
+
+        save();
     } catch (error) {
         console.error("No se pudo sincronizar con D1:", error);
-        toast("No se pudo conectar con el servidor. Se muestran los datos locales.");
+        toast(`Error al sincronizar los datos: ${error.message}`);
     }
+
     render();
 }
 
